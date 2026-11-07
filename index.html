@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fast Delivery Siberia — planner</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 860px; margin: 2rem auto; padding: 0 1rem; }
+  fieldset { margin: 1rem 0; } label { display: block; margin: .5rem 0 .2rem; }
+  button { padding: .4rem .9rem; margin-right: .5rem; } button:disabled { opacity: .5; }
+  table { border-collapse: collapse; width: 100%; margin: .5rem 0; }
+  th, td { border: 1px solid #aaa; padding: .25rem .5rem; text-align: left; }
+  .err { background: #fde8e8; border: 1px solid #c33; padding: .5rem 1rem; }
+  .ok { background: #e8f6ea; border: 1px solid #3a3; padding: .5rem 1rem; }
+  .hidden { display: none; } code { background: #eee; padding: 0 .25rem; }
+</style>
+</head>
+<body>
+<h1>Delivery planner <small>v0.2</small></h1>
+
+<fieldset>
+  <legend>1. Import (L01)</legend>
+  <label>orders.csv <code>order_id,weight_kg</code></label>
+  <input type="file" id="orders" accept=".csv">
+  <label>vehicles.csv <code>vehicle_id,capacity_kg</code></label>
+  <input type="file" id="vehicles" accept=".csv">
+  <label>distance matrix (optional)</label>
+  <input type="file" id="matrix" accept=".csv">
+  <p><button id="btnImport">Import</button></p>
+</fieldset>
+
+<fieldset>
+  <legend>2. Allocate (L02) and export (L04)</legend>
+  <button id="btnCalc" disabled>Calculate</button>
+  <a id="dl" class="hidden" href="#">Download unassigned_orders.csv</a>
+</fieldset>
+
+<div id="msg" class="hidden"></div>
+<div id="out"></div>
+
+<script>
+let sid = null;
+const $ = id => document.getElementById(id);
+
+function show(kind, text, list) {
+  const m = $("msg");
+  m.className = kind; m.textContent = text;
+  if (list && list.length) {
+    const ul = document.createElement("ul");
+    list.forEach(e => { const li = document.createElement("li");
+      li.textContent = (e.row ? "row " + e.row + ", " : "") + (e.field ? e.field + ": " : "") + e.message;
+      ul.appendChild(li); });
+    m.appendChild(ul);
+  }
+}
+
+function table(headers, rows) {
+  const t = document.createElement("table");
+  const h = t.insertRow();
+  headers.forEach(x => { const th = document.createElement("th"); th.textContent = x; h.appendChild(th); });
+  rows.forEach(r => { const tr = t.insertRow();
+    r.forEach(c => { tr.insertCell().textContent = c ?? ""; }); });
+  return t;
+}
+
+async function readFile(id) {
+  const f = $(id).files[0];
+  return f ? await f.text() : null;
+}
+
+$("btnImport").onclick = async () => {
+  $("out").replaceChildren(); $("dl").className = "hidden"; $("btnCalc").disabled = true; sid = null;
+  const orders_csv = await readFile("orders"), vehicles_csv = await readFile("vehicles");
+  if (!orders_csv || !vehicles_csv) return show("err", "Choose orders.csv and vehicles.csv first.");
+  const res = await fetch("/api/v1/planning-sessions/import", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({orders_csv, vehicles_csv, matrix_csv: await readFile("matrix")})
+  });
+  const data = await res.json();
+  if (!res.ok) return show("err", data.message || "Import failed", data.errors);
+  sid = data.planning_session_id; $("btnCalc").disabled = false;
+  show("ok", `Imported ${data.orders} orders and ${data.vehicles} vehicles. Ready to calculate.`);
+};
+
+$("btnCalc").onclick = async () => {
+  const res = await fetch(`/api/v1/planning-sessions/${sid}/calculate`, {method: "POST"});
+  const d = await res.json();
+  if (!res.ok) return show("err", d.message, d.errors);
+  show("ok", `Assigned share: ${d.assigned_share} (${Math.round(d.assigned_share * 100)}%)`);
+  const out = $("out"); out.replaceChildren();
+  out.append(table(["order_id", "weight_kg", "vehicle_id", "status", "reason"],
+    d.assignments.map(a => [a.order_id, a.weight_kg, a.vehicle_id, a.status, a.reason])));
+  out.append(table(["vehicle_id", "capacity_kg", "load_kg", "route", "distance_km"],
+    d.vehicles.map(v => [v.vehicle_id, v.capacity_kg, v.load_kg, v.route ? v.route.join(" → ") : "", v.distance_km])));
+  const dl = $("dl"); dl.href = `/api/v1/planning-sessions/${sid}/unassigned.csv`; dl.className = "";
+};
+</script>
+</body>
+</html>
